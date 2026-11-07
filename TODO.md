@@ -1,0 +1,5 @@
+RESOLVED BUGS:
+- [x] Trainer cache crash & missing debug output: Fixed nil crash on `line:GetText():match(...)`, handled 16001 `GetTrainerServiceInfo` returning availability/headers in the 2nd return value, and added structured `C_TooltipInfo.GetTrainerService` line scanning.
+- [x] Trainer preview level range (level +3) & early level 10+ spells: Fixed `reqLevel` extraction via `C_TooltipInfo` + stripped tooltip text so high-level spells no longer fall back to `reqLevel = 1`, and repaired poisoned `known = true` entries caused by name-only matching in `ProcessLearnedSpell`.
+- [x] Multiple spells per level & rank preservation: Recovered rank subtext from `C_TooltipInfo`, `GetSpellRankText`, and tooltip right-text, and replaced the unstable `_i` row index cache key with deterministic `spellID` or `name_rank_reqLevel` keys.
+- [x] Level-up popup trigger: Only opens the trainer reminder popup on level up when `#availableSpells > 0` (when there is something trainable at the player's current level).
