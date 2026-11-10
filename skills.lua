@@ -479,14 +479,9 @@ local function IsSpellOrRankKnown(name, rank, spellID)
         rank = GetSpellRankText(spellID)
     end
 
-    if spellID then
-        if C_Spell and C_Spell.IsSpellKnownOrOverridesKnown and C_Spell.IsSpellKnownOrOverridesKnown(spellID) then return true end
-        if C_Spell and C_Spell.IsSpellKnown and C_Spell.IsSpellKnown(spellID) then return true end
-        if IsSpellKnown and IsSpellKnown(spellID) then return true end
-        if IsPlayerSpell and IsPlayerSpell(spellID) then return true end
-        if C_SpellBook and C_SpellBook.FindSpellBookSlotForSpell then
-            if C_SpellBook.FindSpellBookSlotForSpell(spellID) then return true end
-        end
+    -- Fast O(1) check: if this exact spellID is in our spellbook snapshot, it's definitely known
+    if spellID and knownSpellIDs and knownSpellIDs[spellID] then
+        return true
     end
 
     local reqRankNum = ParseRankNumber(rank)
@@ -525,26 +520,33 @@ local function IsSpellOrRankKnown(name, rank, spellID)
                     for j = 1, numItems do
                         local slotIndex = offset + j
                         local bookName, bookRank, sID
+                        local isFuture = false
                         if C_SpellBook.GetSpellBookItemInfo then
                             local itemInfo = C_SpellBook.GetSpellBookItemInfo(slotIndex, playerBank)
                             if itemInfo then
-                                sID = itemInfo.spellID or itemInfo.actionID
-                                bookName = itemInfo.name
-                                bookRank = itemInfo.subName
+                                if itemInfo.itemType and Enum and Enum.SpellBookItemType and itemInfo.itemType == Enum.SpellBookItemType.FutureSpell then
+                                    isFuture = true
+                                else
+                                    sID = itemInfo.spellID or itemInfo.actionID
+                                    bookName = itemInfo.name
+                                    bookRank = itemInfo.subName
+                                end
                             end
                         end
-                        if C_SpellBook.GetSpellBookItemName then
-                            local n, r = C_SpellBook.GetSpellBookItemName(slotIndex, playerBank)
-                            bookName = bookName or n
-                            if not bookRank or bookRank == "" then bookRank = r end
-                        end
-                        if sID then
-                            if not bookName then bookName = GetSpellName(sID) end
-                            if not bookRank or bookRank == "" then bookRank = GetSpellRankText(sID) end
-                        end
+                        if not isFuture then
+                            if C_SpellBook.GetSpellBookItemName then
+                                local n, r = C_SpellBook.GetSpellBookItemName(slotIndex, playerBank)
+                                bookName = bookName or n
+                                if not bookRank or bookRank == "" then bookRank = r end
+                            end
+                            if sID then
+                                if not bookName then bookName = GetSpellName(sID) end
+                                if not bookRank or bookRank == "" then bookRank = GetSpellRankText(sID) end
+                            end
 
-                        if CheckBookEntry(bookName, bookRank, sID) then
-                            return true
+                            if CheckBookEntry(bookName, bookRank, sID) then
+                                return true
+                            end
                         end
                     end
                 end
@@ -558,29 +560,42 @@ local function IsSpellOrRankKnown(name, rank, spellID)
                 for j = 1, numSpells do
                     local slotIndex = offset + j
                     local bookName, bookRank, sID
-                    if GetSpellBookItemName then
-                        bookName, bookRank = GetSpellBookItemName(slotIndex, "spell")
-                    end
+                    local isFuture = false
                     if GetSpellBookItemInfo then
-                        local _, id = GetSpellBookItemInfo(slotIndex, "spell")
-                        sID = id
+                        local itemType, id = GetSpellBookItemInfo(slotIndex, "spell")
+                        if itemType == "FUTURESPELL" then
+                            isFuture = true
+                        else
+                            sID = id
+                        end
                     end
-                    if CheckBookEntry(bookName, bookRank, sID) then
-                        return true
+                    if not isFuture then
+                        if GetSpellBookItemName then
+                            bookName, bookRank = GetSpellBookItemName(slotIndex, "spell")
+                        end
+                        if CheckBookEntry(bookName, bookRank, sID) then
+                            return true
+                        end
                     end
                 end
             end
         else
             local maxSpells = 250
             for slotIndex = 1, maxSpells do
-                local bookName, bookRank
-                if C_SpellBook and C_SpellBook.GetSpellBookItemName then
-                    bookName, bookRank = C_SpellBook.GetSpellBookItemName(slotIndex, playerBank)
-                elseif GetSpellBookItemName then
-                    bookName, bookRank = GetSpellBookItemName(slotIndex, "spell")
+                local bookName, bookRank, isFuture
+                if GetSpellBookItemInfo then
+                    local itemType = GetSpellBookItemInfo(slotIndex, "spell")
+                    if itemType == "FUTURESPELL" then isFuture = true end
                 end
-                if CheckBookEntry(bookName, bookRank, nil) then
-                    return true
+                if not isFuture then
+                    if C_SpellBook and C_SpellBook.GetSpellBookItemName then
+                        bookName, bookRank = C_SpellBook.GetSpellBookItemName(slotIndex, playerBank)
+                    elseif GetSpellBookItemName then
+                        bookName, bookRank = GetSpellBookItemName(slotIndex, "spell")
+                    end
+                    if CheckBookEntry(bookName, bookRank, nil) then
+                        return true
+                    end
                 end
             end
         end
@@ -590,7 +605,7 @@ local function IsSpellOrRankKnown(name, rank, spellID)
 end
 
 local function ExtractTrainerTooltipData(serviceIndex)
-    local foundSpellID, foundRank, foundReqLevel = nil, nil, nil
+    local foundSpellID, foundRank, foundReqLevel, foundClasses = nil, nil, nil, nil
 
     local function InspectText(rawText, isFirstLineRight)
         if type(rawText) ~= "string" or rawText == "" then return end
@@ -605,6 +620,12 @@ local function ExtractTrainerTooltipData(serviceIndex)
             local lMatch = clean:match("[Rr]equires%s+[Ll]evel%s+(%d+)") or clean:match("[Ll]evel%s+(%d+)%s+[Rr]equired")
             if lMatch then
                 foundReqLevel = tonumber(lMatch)
+            end
+        end
+        if not foundClasses then
+            local cMatch = clean:match("^[Cc]lasses:%s*(.+)$") or clean:match("^[Cc]lass:%s*(.+)$")
+            if cMatch then
+                foundClasses = cMatch
             end
         end
     end
@@ -654,12 +675,217 @@ local function ExtractTrainerTooltipData(serviceIndex)
         end
     end
 
-    return foundSpellID, foundRank, foundReqLevel
+    return foundSpellID, foundRank, foundReqLevel, foundClasses
+end
+
+----------------------------------------------------
+-- Allowed Trainer & Skill Classification Filters
+----------------------------------------------------
+local WEAPON_SKILLS = {
+    ["One-Handed Axes"] = true,
+    ["Two-Handed Axes"] = true,
+    ["One-Handed Maces"] = true,
+    ["Two-Handed Maces"] = true,
+    ["One-Handed Swords"] = true,
+    ["Two-Handed Swords"] = true,
+    ["Daggers"] = true,
+    ["Staves"] = true,
+    ["Polearms"] = true,
+    ["Fist Weapons"] = true,
+    ["Bows"] = true,
+    ["Crossbows"] = true,
+    ["Guns"] = true,
+    ["Thrown"] = true,
+}
+
+local HUNTER_PET_UNIQUE_SKILLS = {
+    ["Great Stamina"] = true,
+    ["Natural Armor"] = true,
+    ["Arcane Resistance"] = true,
+    ["Fire Resistance"] = true,
+    ["Frost Resistance"] = true,
+    ["Nature Resistance"] = true,
+    ["Shadow Resistance"] = true,
+    ["Dive"] = true,
+    ["Furious Howl"] = true,
+    ["Lightning Breath"] = true,
+    ["Shell Shield"] = true,
+    ["Scorpid Poison"] = true,
+    ["Screech"] = true,
+    ["Thunderstomp"] = true,
+}
+
+local function IsRidingSkill(name)
+    if not name or name == "" then return false end
+    if name:find("Riding") or name:find("Piloting") or name:find("Cold Weather Flying") then
+        return true
+    end
+    return false
+end
+
+local function GetTrainerNPCTitle()
+    local unit = (UnitExists("npc") and "npc") or (UnitExists("target") and "target") or nil
+    if not unit then return nil end
+
+    scanTooltip:SetOwner(UIParent, "ANCHOR_NONE")
+    scanTooltip:ClearLines()
+    local ok = pcall(scanTooltip.SetUnit, scanTooltip, unit)
+    if ok then
+        local numLines = scanTooltip:NumLines() or 0
+        for i = 2, math.min(numLines, 5) do
+            local line = _G["FSMCacheScanTooltipTextLeft" .. i]
+            if line and line.GetText then
+                local text = line:GetText()
+                if text and text ~= "" then
+                    local clean = StripColorCodes(text):match("^%s*(.-)%s*$")
+                    local title = clean:match("^<(.+)>$") or clean:match("<(.+)>")
+                    if title then return title end
+                    if i == 2 and not clean:find("^Level") and not clean:find("^Requires") and not clean:find("Player") and not clean:find("Elite") and not clean:find("Boss") then
+                        return clean
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function IsTrainerNPCAllowed()
+    if IsTradeskillTrainer and IsTradeskillTrainer() then return false end
+    if C_Trainer and C_Trainer.IsTradeskillTrainer and C_Trainer.IsTradeskillTrainer() then return false end
+
+    local _, playerClass = UnitClass("player")
+    playerClass = playerClass or "UNKNOWN"
+
+    local title = GetTrainerNPCTitle()
+    if not title or title == "" then
+        return true -- Fallback to service-level filtering
+    end
+
+    local lower = title:lower()
+
+    -- 1. Weapon Masters / Weapon Trainers (always blocked)
+    if lower:find("weapon") then
+        DebugPrint("Blocked trainer NPC: Weapon Master (" .. title .. ")")
+        return false
+    end
+
+    -- 2. Riding Trainers (always blocked)
+    if lower:find("riding") or lower:find("mount") then
+        DebugPrint("Blocked trainer NPC: Riding Trainer (" .. title .. ")")
+        return false
+    end
+
+    -- 3. Hunter Pet Trainers (only allowed for Hunters)
+    if lower:find("pet trainer") or lower:find("beast trainer") then
+        if playerClass == "HUNTER" then
+            return true
+        else
+            DebugPrint("Blocked pet trainer NPC for non-hunter (" .. title .. ")")
+            return false
+        end
+    end
+
+    -- 4. Warlock Demon Trainers (only allowed for Warlocks)
+    if lower:find("demon trainer") then
+        if playerClass == "WARLOCK" then
+            return true
+        else
+            DebugPrint("Blocked demon trainer NPC for non-warlock (" .. title .. ")")
+            return false
+        end
+    end
+
+    -- 5. Mage Portal Trainers (only allowed for Mages)
+    if lower:find("portal") then
+        if playerClass == "MAGE" then
+            return true
+        else
+            DebugPrint("Blocked portal trainer NPC for non-mage (" .. title .. ")")
+            return false
+        end
+    end
+
+    -- 6. Specific Class Trainers
+    local classTokens = {
+        WARRIOR = "warrior",
+        PALADIN = "paladin",
+        HUNTER  = "hunter",
+        ROGUE   = "rogue",
+        PRIEST  = "priest",
+        SHAMAN  = "shaman",
+        MAGE    = "mage",
+        WARLOCK = "warlock",
+        DRUID   = "druid",
+    }
+
+    for cls, token in pairs(classTokens) do
+        if lower:find(token) then
+            if playerClass == cls then
+                return true
+            else
+                DebugPrint("Blocked foreign class trainer NPC (" .. title .. ", player is " .. tostring(playerClass) .. ")")
+                return false
+            end
+        end
+    end
+
+    return true
+end
+
+local function IsTrainerSpellAllowed(name, rank, spellID, reqLevel, reqClasses)
+    if not name or name == "" then return false end
+    local localizedClass, playerClass = UnitClass("player")
+    playerClass = playerClass or "UNKNOWN"
+    localizedClass = localizedClass or ""
+
+    -- 1. Always reject Weapon Master proficiencies
+    if WEAPON_SKILLS[name] then
+        return false
+    end
+
+    -- 2. Always reject Riding Trainer skills
+    if IsRidingSkill(name) then
+        return false
+    end
+
+    -- 3. Portal / Teleport skills: only allowed for Mages
+    if name:find("^Teleport:") or name:find("^Portal:") then
+        return (playerClass == "MAGE")
+    end
+
+    -- 4. Warlock Demon Grimoires / Pet Books: only allowed for Warlocks
+    if name:find("^Grimoire of ") then
+        return (playerClass == "WARLOCK")
+    end
+
+    -- 5. Hunter Pet Trainer unique skills: only allowed for Hunters
+    if HUNTER_PET_UNIQUE_SKILLS[name] then
+        return (playerClass == "HUNTER")
+    end
+
+    -- Growl / Cower / Dash: Druids have these in forms; Hunters have them for pets; others do not.
+    if name == "Growl" or name == "Cower" or name == "Dash" then
+        if playerClass ~= "HUNTER" and playerClass ~= "DRUID" then
+            return false
+        end
+    end
+
+    -- 6. If tooltip explicitly specifies class restrictions, verify player's class is allowed
+    if reqClasses and reqClasses ~= "" then
+        local lowerReq = reqClasses:lower()
+        local lowerEng = playerClass:lower()
+        local lowerLoc = localizedClass:lower()
+        if not lowerReq:find(lowerEng, 1, true) and not lowerReq:find(lowerLoc, 1, true) then
+            return false
+        end
+    end
+
+    return true
 end
 
 local function CacheTrainerSpells()
-    if IsTradeskillTrainer and IsTradeskillTrainer() then return end
-    if C_Trainer and C_Trainer.IsTradeskillTrainer and C_Trainer.IsTradeskillTrainer() then return end
+    if not IsTrainerNPCAllowed() then return end
 
     local numServices = GetNumTrainerServices and GetNumTrainerServices() or 0
     if C_Trainer and C_Trainer.GetNumTrainerServices then 
@@ -697,7 +923,7 @@ local function CacheTrainerSpells()
         end
 
         if name and category ~= "header" then
-            local tipSpellID, tipRank, tipReqLevel = ExtractTrainerTooltipData(i)
+            local tipSpellID, tipRank, tipReqLevel, tipClasses = ExtractTrainerTooltipData(i)
             if not spellID and tipSpellID then
                 spellID = tipSpellID
             end
@@ -715,31 +941,49 @@ local function CacheTrainerSpells()
             reqLevel = tonumber(reqLevel) or 1
             rank = rank or ""
 
-            -- Purge any legacy duplicate keys that used the unstable trainer row index '_i' for this spell
-            for existingKey, existingInfo in pairs(cache) do
-                if type(existingInfo) == "table" and existingInfo.name == name then
-                    if (existingInfo.rank or "") == rank and existingInfo.reqLevel == reqLevel and existingKey ~= spellID then
-                        cache[existingKey] = nil
-                    elseif (existingInfo.rank or "") == "" and rank ~= "" and existingInfo.reqLevel == reqLevel then
+            -- Check if this service is an allowed spell (Class skill, Hunter pet skill, Warlock grimoire, Mage portal)
+            if not IsTrainerSpellAllowed(name, rank, spellID, reqLevel, tipClasses) then
+                -- Purge any previously cached entries for this disallowed spell
+                for existingKey, existingInfo in pairs(cache) do
+                    if type(existingInfo) == "table" and existingInfo.name == name then
                         cache[existingKey] = nil
                     end
                 end
+            else
+                -- Purge any legacy duplicate keys that used the unstable trainer row index '_i' for this spell
+                for existingKey, existingInfo in pairs(cache) do
+                    if type(existingInfo) == "table" and existingInfo.name == name then
+                        if (existingInfo.rank or "") == rank and existingInfo.reqLevel == reqLevel and existingKey ~= spellID then
+                            cache[existingKey] = nil
+                        elseif (existingInfo.rank or "") == "" and rank ~= "" and existingInfo.reqLevel == reqLevel then
+                            cache[existingKey] = nil
+                        end
+                    end
+                end
+
+                -- Deterministic key by spellID or (name + rank + reqLevel)
+                local serviceKey = spellID or (name .. "_" .. rank .. "_" .. reqLevel)
+                local isKnown = false
+                if category == "used" then
+                    isKnown = true
+                elseif category == "available" or category == "unavailable" then
+                    isKnown = false
+                else
+                    isKnown = IsSpellOrRankKnown(name, rank, spellID)
+                end
+
+                DebugPrint("Caching spell: " .. tostring(name) .. " | Rank: " .. tostring(rank) .. " | Level: " .. tostring(reqLevel) .. " | Known: " .. tostring(isKnown))
+
+                cache[serviceKey] = {
+                    name = name,
+                    rank = rank,
+                    cost = cost or 0,
+                    reqLevel = reqLevel,
+                    spellID = spellID,
+                    reqClasses = tipClasses,
+                    known = isKnown
+                }
             end
-
-            -- Deterministic key by spellID or (name + rank + reqLevel)
-            local serviceKey = spellID or (name .. "_" .. rank .. "_" .. reqLevel)
-            local isKnown = (category == "used") or IsSpellOrRankKnown(name, rank, spellID)
-
-            DebugPrint("Caching spell: " .. tostring(name) .. " | Rank: " .. tostring(rank) .. " | Level: " .. tostring(reqLevel) .. " | Known: " .. tostring(isKnown))
-
-            cache[serviceKey] = {
-                name = name,
-                rank = rank,
-                cost = cost or 0,
-                reqLevel = reqLevel,
-                spellID = spellID,
-                known = isKnown
-            }
         elseif name and category == "header" then
             -- Remove any accidentally cached header rows from older versions
             for existingKey, existingInfo in pairs(cache) do
@@ -757,8 +1001,7 @@ end
 
 local function AutoTrainAvailableSpells()
     if not ForeverSkillManagerDB or not ForeverSkillManagerDB.autoTrainSpells then return end
-    if IsTradeskillTrainer and IsTradeskillTrainer() then return end
-    if C_Trainer and C_Trainer.IsTradeskillTrainer and C_Trainer.IsTradeskillTrainer() then return end
+    if not IsTrainerNPCAllowed() then return end
     if not BuyTrainerService then return end
 
     local numServices = GetNumTrainerServices and GetNumTrainerServices() or 0
@@ -786,7 +1029,7 @@ local function AutoTrainAvailableSpells()
             rank = ""
         end
 
-        if name and category == "available" then
+        if name and category == "available" and IsTrainerSpellAllowed(name) then
             local money = GetMoney and GetMoney() or 0
             cost = tonumber(cost) or 0
             if money >= cost then
@@ -814,29 +1057,30 @@ local function CheckAvailableTrainerSpells(overrideLevel)
 
     local cache = ForeverSkillManagerDB.trainerCache[charKey]
     for key, info in pairs(cache) do
-        local rLvl = tonumber(info.reqLevel) or 1
-        local actuallyKnown = IsSpellOrRankKnown(info.name, info.rank, info.spellID)
+        -- Purge any disallowed / non-class spells that were cached previously (e.g. from weapon masters)
+        if not IsTrainerSpellAllowed(info.name, info.rank, info.spellID, info.reqLevel, info.reqClasses) then
+            cache[key] = nil
+        else
+            local rLvl = tonumber(info.reqLevel) or 1
+            local actuallyKnown = IsSpellOrRankKnown(info.name, info.rank, info.spellID)
 
-        -- Repair any higher-level spells that were falsely marked known by the old name-matching bug
-        if info.known and not actuallyKnown and rLvl > playerLevel then
-            info.known = false
-        elseif actuallyKnown then
-            info.known = true
-        end
+            -- Keep known status strictly in sync with the player's actual spellbook
+            info.known = actuallyKnown
 
-        if not info.known then
-            if rLvl <= playerLevel then
-                table.insert(available, {
-                    key = key, name = info.name, rank = info.rank, 
-                    cost = info.cost or 0, level = rLvl, spellID = info.spellID
-                })
-                totalCost = totalCost + (info.cost or 0)
-            -- Upcoming spells strictly between (playerLevel + 1) and (playerLevel + 3)
-            elseif rLvl > playerLevel and rLvl <= (playerLevel + 3) then
-                table.insert(upcoming, {
-                    key = key, name = info.name, rank = info.rank, 
-                    cost = info.cost or 0, level = rLvl, spellID = info.spellID
-                })
+            if not info.known then
+                if rLvl <= playerLevel then
+                    table.insert(available, {
+                        key = key, name = info.name, rank = info.rank, 
+                        cost = info.cost or 0, level = rLvl, spellID = info.spellID
+                    })
+                    totalCost = totalCost + (info.cost or 0)
+                -- Upcoming spells strictly between (playerLevel + 1) and (playerLevel + 3)
+                elseif rLvl > playerLevel and rLvl <= (playerLevel + 3) then
+                    table.insert(upcoming, {
+                        key = key, name = info.name, rank = info.rank, 
+                        cost = info.cost or 0, level = rLvl, spellID = info.spellID
+                    })
+                end
             end
         end
     end
@@ -1376,7 +1620,10 @@ local function SnapshotSpellbook()
                     if C_SpellBook.GetSpellBookItemInfo then
                         local itemInfo = C_SpellBook.GetSpellBookItemInfo(slotIndex, playerBank)
                         if itemInfo then
-                            sID = itemInfo.spellID or itemInfo.actionID
+                            local isFuture = (itemInfo.itemType and Enum and Enum.SpellBookItemType and itemInfo.itemType == Enum.SpellBookItemType.FutureSpell)
+                            if not isFuture then
+                                sID = itemInfo.spellID or itemInfo.actionID
+                            end
                         end
                     end
                     if sID then
@@ -1394,13 +1641,27 @@ local function SnapshotSpellbook()
             for j = 1, numSpells do
                 local slotIndex = tabOffset + j
                 local sID = nil
-                if C_SpellBook and C_SpellBook.GetSpellBookItemInfo then
-                    local itemInfo = C_SpellBook.GetSpellBookItemInfo(slotIndex, playerBank)
-                    if itemInfo then
-                        sID = itemInfo.spellID or itemInfo.actionID
+                local isFuture = false
+                if GetSpellBookItemInfo then
+                    local itemType, id = GetSpellBookItemInfo(slotIndex, "spell")
+                    if itemType == "FUTURESPELL" then
+                        isFuture = true
+                    else
+                        sID = id
                     end
                 end
-                if sID then
+                if C_SpellBook and C_SpellBook.GetSpellBookItemInfo and not isFuture then
+                    local itemInfo = C_SpellBook.GetSpellBookItemInfo(slotIndex, playerBank)
+                    if itemInfo then
+                        if itemInfo.itemType and Enum and Enum.SpellBookItemType and itemInfo.itemType == Enum.SpellBookItemType.FutureSpell then
+                            isFuture = true
+                            sID = nil
+                        else
+                            sID = itemInfo.spellID or itemInfo.actionID or sID
+                        end
+                    end
+                end
+                if sID and not isFuture then
                     snapshot[sID] = true
                 end
             end
@@ -1457,10 +1718,16 @@ end
 FSM.Events["TRAINER_SHOW"] = function(self)
     CacheTrainerSpells()
     AutoTrainAvailableSpells()
+    if popupFrame and popupFrame:IsShown() and FSM.OpenTrainerReminder then
+        FSM.OpenTrainerReminder(true)
+    end
 end
 
 FSM.Events["TRAINER_UPDATE"] = function(self)
     CacheTrainerSpells()
+    if popupFrame and popupFrame:IsShown() and FSM.OpenTrainerReminder then
+        FSM.OpenTrainerReminder(true)
+    end
 end
 
 FSM.Events["CHARACTER_POINTS_CHANGED"] = function(self)
