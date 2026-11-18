@@ -34,24 +34,60 @@ local scanTooltip = CreateFrame("GameTooltip", "FSMCacheScanTooltip", UIParent, 
 ----------------------------------------------------
 -- Compatibility & Helper Wrappers (WoW Forever 1.6 / 16001)
 ----------------------------------------------------
+local IsSecret = FSM.IsSecret or function(v)
+    if v == nil then return false end
+    local issecret = rawget(_G, "issecretvalue") or issecretvalue
+    if issecret and issecret(v) then return true end
+    local issectbl = rawget(_G, "issecrettable") or issecrettable
+    if issectbl and issectbl(v) then return true end
+    local canaccess = rawget(_G, "canaccessvalue") or canaccessvalue
+    if canaccess and not canaccess(v) then return true end
+    local ok = pcall(function() return v == "" end)
+    if not ok then return true end
+    return false
+end
+
+local SafeString = FSM.SafeString or function(v)
+    if v == nil or IsSecret(v) then return nil end
+    local ok, res = pcall(function()
+        if type(v) == "string" and v ~= "" then
+            return v
+        end
+        return nil
+    end)
+    return ok and res or nil
+end
+
+local SafeGetText = FSM.SafeGetText or function(fontString)
+    if not fontString or not fontString.GetText then return nil end
+    local ok, text = pcall(fontString.GetText, fontString)
+    if not ok or not text then return nil end
+    return SafeString(text)
+end
+
 local function StripColorCodes(text)
-    if type(text) ~= "string" then return "" end
-    return text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+    text = SafeString(text)
+    if not text then return "" end
+    local ok, clean = pcall(function()
+        return text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+    end)
+    return ok and clean or ""
 end
 
 local function GetCharKey()
     local name, arg2 = UnitName("player")
-    name = name or "Player"
-    local realm = GetRealmName() or "Realm"
+    name = SafeString(name) or "Player"
+    local realm = SafeString(GetRealmName()) or "Realm"
 
     -- WoW Forever 1.6 supports character last names via UnitName 2nd return or UnitLastName
     local lastName = nil
-    if type(arg2) == "string" and arg2 ~= "" and arg2 ~= realm then
-        lastName = arg2
+    local safeArg2 = SafeString(arg2)
+    if safeArg2 and safeArg2 ~= realm then
+        lastName = safeArg2
     end
     if not lastName and UnitLastName then
-        local last = UnitLastName("player")
-        if type(last) == "string" and last ~= "" then
+        local last = SafeString(UnitLastName("player"))
+        if last then
             lastName = last
         end
     end
@@ -96,12 +132,22 @@ FSM.GetUnspentTalentPoints = GetUnspentTalentPointsCount
 local function GetSpellName(spellID)
     if not spellID then return nil end
     if C_Spell and C_Spell.GetSpellInfo then
-        local info = C_Spell.GetSpellInfo(spellID)
-        if type(info) == "table" then return info.name end
-        if type(info) == "string" then return info end
+        local ok, info = pcall(C_Spell.GetSpellInfo, spellID)
+        if ok and info then
+            if type(info) == "table" and not IsSecret(info) then
+                local name = SafeString(info.name)
+                if name then return name end
+            elseif type(info) == "string" then
+                local name = SafeString(info)
+                if name then return name end
+            end
+        end
     end
     if GetSpellInfo then
-        return (GetSpellInfo(spellID))
+        local ok, name = pcall(GetSpellInfo, spellID)
+        if ok and name then
+            return SafeString(name)
+        end
     end
     return nil
 end
@@ -109,12 +155,18 @@ end
 local function GetSpellRankText(spellID)
     if not spellID then return "" end
     if C_Spell and C_Spell.GetSpellSubtext then
-        local sub = C_Spell.GetSpellSubtext(spellID)
-        if sub and sub ~= "" then return sub end
+        local ok, sub = pcall(C_Spell.GetSpellSubtext, spellID)
+        if ok then
+            local s = SafeString(sub)
+            if s then return s end
+        end
     end
     if GetSpellSubtext then
-        local sub = GetSpellSubtext(spellID)
-        if sub and sub ~= "" then return sub end
+        local ok, sub = pcall(GetSpellSubtext, spellID)
+        if ok then
+            local s = SafeString(sub)
+            if s then return s end
+        end
     end
     return ""
 end
@@ -220,15 +272,18 @@ local function HasOnUseEffect(itemLink, equipSlot)
     end
 
     local triggerPattern = (ITEM_SPELL_TRIGGER_ONUSE or "Use:"):lower():gsub("%%s", ""):gsub(":", "")
-    for i = 1, scanTooltip:NumLines() do
+    local numLines = 0
+    local okNum, n = pcall(scanTooltip.NumLines, scanTooltip)
+    if okNum and type(n) == "number" and not IsSecret(n) then
+        numLines = n
+    end
+    for i = 1, numLines do
         local line = _G["FSMCacheScanTooltipTextLeft" .. i]
-        if line then
-            local text = line:GetText()
-            if text then
-                local lowerText = text:lower()
-                if lowerText:find("^use:") or lowerText:find(triggerPattern, 1, true) then
-                    return true
-                end
+        local text = SafeGetText(line)
+        if text then
+            local lowerText = text:lower()
+            if lowerText:find("^use:") or lowerText:find(triggerPattern, 1, true) then
+                return true
             end
         end
     end
@@ -608,7 +663,8 @@ local function ExtractTrainerTooltipData(serviceIndex)
     local foundSpellID, foundRank, foundReqLevel, foundClasses = nil, nil, nil, nil
 
     local function InspectText(rawText, isFirstLineRight)
-        if type(rawText) ~= "string" or rawText == "" then return end
+        rawText = SafeString(rawText)
+        if not rawText then return end
         local clean = StripColorCodes(rawText)
         if not foundRank or foundRank == "" then
             local rMatch = clean:match("^([Rr]ank%s+%d+)$") or (isFirstLineRight and clean:match("([Rr]ank%s+%d+)"))
@@ -633,18 +689,20 @@ local function ExtractTrainerTooltipData(serviceIndex)
     -- 1. WoW Forever 16001 structured C_TooltipInfo scan
     if C_TooltipInfo and C_TooltipInfo.GetTrainerService then
         local ok, data = pcall(C_TooltipInfo.GetTrainerService, serviceIndex)
-        if ok and data then
-            if data.spellID then foundSpellID = data.spellID
-            elseif data.id then foundSpellID = data.id end
+        if ok and type(data) == "table" and not IsSecret(data) then
+            if data.spellID and not IsSecret(data.spellID) then foundSpellID = data.spellID
+            elseif data.id and not IsSecret(data.id) then foundSpellID = data.id end
 
-            if type(data.lines) == "table" then
+            if type(data.lines) == "table" and not IsSecret(data.lines) then
                 for idx, line in ipairs(data.lines) do
-                    InspectText(line.rightText, idx == 1)
-                    InspectText(line.leftText, idx == 1)
-                    if type(line.args) == "table" then
-                        for _, arg in ipairs(line.args) do
-                            if type(arg) == "table" and type(arg.stringVal) == "string" then
-                                InspectText(arg.stringVal, idx == 1)
+                    if type(line) == "table" and not IsSecret(line) then
+                        InspectText(line.rightText, idx == 1)
+                        InspectText(line.leftText, idx == 1)
+                        if type(line.args) == "table" and not IsSecret(line.args) then
+                            for _, arg in ipairs(line.args) do
+                                if type(arg) == "table" and not IsSecret(arg) and type(arg.stringVal) == "string" then
+                                    InspectText(arg.stringVal, idx == 1)
+                                end
                             end
                         end
                     end
@@ -659,18 +717,19 @@ local function ExtractTrainerTooltipData(serviceIndex)
         scanTooltip:ClearLines()
         local ok = pcall(scanTooltip.SetTrainerService, scanTooltip, serviceIndex)
         if ok then
-            local numLines = scanTooltip:NumLines() or 0
+            local numLines = 0
+            local okNum, n = pcall(scanTooltip.NumLines, scanTooltip)
+            if okNum and type(n) == "number" and not IsSecret(n) then
+                numLines = n
+            end
             for lineIdx = 1, numLines do
                 local rightLine = _G["FSMCacheScanTooltipTextRight" .. lineIdx]
-                if rightLine and rightLine.GetText then
-                    local rText = rightLine:GetText()
-                    if rText then InspectText(rText, lineIdx == 1) end
-                end
+                local rText = SafeGetText(rightLine)
+                if rText then InspectText(rText, lineIdx == 1) end
+
                 local leftLine = _G["FSMCacheScanTooltipTextLeft" .. lineIdx]
-                if leftLine and leftLine.GetText then
-                    local lText = leftLine:GetText()
-                    if lText then InspectText(lText, lineIdx == 1) end
-                end
+                local lText = SafeGetText(leftLine)
+                if lText then InspectText(lText, lineIdx == 1) end
             end
         end
     end
@@ -698,7 +757,7 @@ local WEAPON_SKILLS = {
     ["Thrown"] = true,
 }
 
-local HUNTER_PET_UNIQUE_SKILLS = {
+local BEAST_TRAINING_UNIQUE_SKILLS = {
     ["Great Stamina"] = true,
     ["Natural Armor"] = true,
     ["Arcane Resistance"] = true,
@@ -713,35 +772,415 @@ local HUNTER_PET_UNIQUE_SKILLS = {
     ["Scorpid Poison"] = true,
     ["Screech"] = true,
     ["Thunderstomp"] = true,
+    ["Bite"] = true,
+    ["Prowl"] = true,
+    ["Warp"] = true,
+    ["Gore"] = true,
+    ["Poison Spit"] = true,
+    ["Fire Breath"] = true,
+    ["Lava Breath"] = true,
+    ["Demoralizing Screech"] = true,
+    ["Swoop"] = true,
+    ["Tendon Rip"] = true,
 }
 
+local isBeastTrainingWindowActive = false
+
+local function IsBeastTrainingWindowOpen()
+    if isBeastTrainingWindowActive then
+        return true
+    end
+    if CraftIsPetTraining and CraftIsPetTraining() then
+        return true
+    end
+    if GetCraftSkillLine then
+        local line = GetCraftSkillLine()
+        if line and (line == "Beast Training" or tostring(line):find("Beast Training")) then
+            return true
+        end
+    end
+    if CraftFrame and CraftFrame.IsShown and CraftFrame:IsShown() then
+        local title = SafeGetText(CraftFrameTitleText)
+        if title and (title == "Beast Training" or title:find("Beast Training")) then
+            return true
+        end
+    end
+    if BeastTrainingFrame and BeastTrainingFrame.IsShown and BeastTrainingFrame:IsShown() then
+        return true
+    end
+    if PetTrainingFrame and PetTrainingFrame.IsShown and PetTrainingFrame:IsShown() then
+        return true
+    end
+    return false
+end
+
+local function IsBeastTrainingSkill(name)
+    name = SafeString(name)
+    if not name then return false end
+    name = StripColorCodes(name):match("^%s*(.-)%s*$") or name
+    local _, playerClass = UnitClass("player")
+    playerClass = playerClass or "UNKNOWN"
+
+    -- Unique pet abilities from the Beast Training window (never valid player class skills)
+    if BEAST_TRAINING_UNIQUE_SKILLS[name] then
+        return true
+    end
+
+    -- Abilities shared by name with player spells in other classes:
+    -- For Hunters, these belong exclusively to the pet Beast Training window
+    if playerClass == "HUNTER" then
+        if name == "Growl" or name == "Cower" or name == "Dash" or name == "Claw" or name == "Charge" then
+            return true
+        end
+    end
+
+    return false
+end
+
 local function IsRidingSkill(name)
-    if not name or name == "" then return false end
+    name = SafeString(name)
+    if not name then return false end
     if name:find("Riding") or name:find("Piloting") or name:find("Cold Weather Flying") then
         return true
     end
     return false
 end
 
+----------------------------------------------------
+-- Talent Spell Identification & Caching
+----------------------------------------------------
+local KNOWN_TALENT_ABILITIES = {
+    -- Druid
+    ["Feral Charge"] = true,
+    ["Feral Charge - Bear"] = true,
+    ["Feral Charge - Cat"] = true,
+    ["Insect Swarm"] = true,
+    ["Nature's Swiftness"] = true,
+    ["Swiftmend"] = true,
+    ["Faerie Fire (Feral)"] = true,
+
+    -- Hunter
+    ["Aimed Shot"] = true,
+    ["Scatter Shot"] = true,
+    ["Bestial Wrath"] = true,
+    ["Wyvern Sting"] = true,
+    ["Intimidation"] = true,
+    ["Trueshot Aura"] = true,
+    ["Counterattack"] = true,
+    ["Readiness"] = true,
+    ["Silencing Shot"] = true,
+    ["Chimera Shot"] = true,
+    ["Kill Shot"] = true,
+    ["Explosive Shot"] = true,
+    ["Black Arrow"] = true,
+
+    -- Mage
+    ["Pyroblast"] = true,
+    ["Blast Wave"] = true,
+    ["Combustion"] = true,
+    ["Arcane Power"] = true,
+    ["Ice Barrier"] = true,
+    ["Cold Snap"] = true,
+    ["Presence of Mind"] = true,
+    ["Dragon's Breath"] = true,
+    ["Living Bomb"] = true,
+    ["Deep Freeze"] = true,
+    ["Arcane Barrage"] = true,
+    ["Slow"] = true,
+
+    -- Paladin
+    ["Holy Shock"] = true,
+    ["Repentance"] = true,
+    ["Seal of Command"] = true,
+    ["Blessing of Kings"] = true,
+    ["Blessing of Sanctuary"] = true,
+    ["Consecration"] = true,
+    ["Holy Shield"] = true,
+    ["Crusader Strike"] = true,
+    ["Divine Storm"] = true,
+    ["Avenger's Shield"] = true,
+    ["Hammer of the Righteous"] = true,
+    ["Shield of the Righteous"] = true,
+
+    -- Priest
+    ["Holy Nova"] = true,
+    ["Desperate Prayer"] = true,
+    ["Inner Focus"] = true,
+    ["Power Infusion"] = true,
+    ["Silence"] = true,
+    ["Vampiric Embrace"] = true,
+    ["Shadowform"] = true,
+    ["Lightwell"] = true,
+    ["Mind Flay"] = true,
+    ["Penance"] = true,
+    ["Circle of Healing"] = true,
+    ["Pain Suppression"] = true,
+    ["Dispersion"] = true,
+    ["Psychic Horror"] = true,
+    ["Vampiric Touch"] = true,
+
+    -- Rogue
+    ["Ghostly Strike"] = true,
+    ["Riposte"] = true,
+    ["Blade Flurry"] = true,
+    ["Adrenaline Rush"] = true,
+    ["Cold Blood"] = true,
+    ["Preparation"] = true,
+    ["Hemorrhage"] = true,
+    ["Premeditation"] = true,
+    ["Shadowstep"] = true,
+    ["Mutilate"] = true,
+    ["Killing Spree"] = true,
+    ["Shadow Dance"] = true,
+
+    -- Shaman
+    ["Elemental Mastery"] = true,
+    ["Mana Tide Totem"] = true,
+    ["Stormstrike"] = true,
+    ["Nature's Swiftness"] = true,
+    ["Lava Lash"] = true,
+    ["Thunderstorm"] = true,
+    ["Riptide"] = true,
+    ["Feral Spirit"] = true,
+
+    -- Warlock
+    ["Shadowburn"] = true,
+    ["Conflagrate"] = true,
+    ["Siphon Life"] = true,
+    ["Soul Link"] = true,
+    ["Dark Pact"] = true,
+    ["Demonic Sacrifice"] = true,
+    ["Amplify Curse"] = true,
+    ["Unstable Affliction"] = true,
+    ["Haunt"] = true,
+    ["Metamorphosis"] = true,
+    ["Chaos Bolt"] = true,
+    ["Shadowfury"] = true,
+
+    -- Warrior
+    ["Sweeping Strikes"] = true,
+    ["Death Wish"] = true,
+    ["Bloodthirst"] = true,
+    ["Piercing Howl"] = true,
+    ["Concussion Blow"] = true,
+    ["Shield Slam"] = true,
+    ["Last Stand"] = true,
+    ["Mortal Strike"] = true,
+    ["Bladestorm"] = true,
+    ["Shockwave"] = true,
+    ["Devastate"] = true,
+}
+
+local talentCache = {}
+
+local function RefreshTalentCache()
+    talentCache = {}
+
+    -- 1. Scan modern C_Traits API (Dragonflight / War Within / 11+ client)
+    if C_Traits and C_Traits.GetConfigsByType then
+        for cfgType = 0, 3 do
+            local ok, configIDs = pcall(C_Traits.GetConfigsByType, cfgType)
+            if ok and type(configIDs) == "table" then
+                for _, configID in ipairs(configIDs) do
+                    local okConf, configInfo = pcall(C_Traits.GetConfigInfo, configID)
+                    if okConf and configInfo and configInfo.treeIDs then
+                        for _, treeID in ipairs(configInfo.treeIDs) do
+                            local okNodes, nodeIDs = pcall(C_Traits.GetTreeNodes, treeID)
+                            if okNodes and type(nodeIDs) == "table" then
+                                for _, nodeID in ipairs(nodeIDs) do
+                                    local okNode, nodeInfo = pcall(C_Traits.GetNodeInfo, configID, nodeID)
+                                    if okNode and nodeInfo and nodeInfo.entryIDs then
+                                        for _, entryID in ipairs(nodeInfo.entryIDs) do
+                                            local okEntry, entryInfo = pcall(C_Traits.GetEntryInfo, configID, entryID)
+                                            if okEntry and entryInfo and entryInfo.definitionID then
+                                                local okDef, defInfo = pcall(C_Traits.GetDefinitionInfo, entryInfo.definitionID)
+                                                if okDef and defInfo and defInfo.spellID then
+                                                    talentCache[defInfo.spellID] = true
+                                                    local sn = GetSpellName(defInfo.spellID)
+                                                    if sn then
+                                                        talentCache[sn] = true
+                                                    end
+                                                end
+                                            end
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- 2. Scan classic talent tabs (GetNumTalentTabs, GetNumTalents, GetTalentInfo)
+    if GetNumTalentTabs and GetTalentInfo then
+        local okTabs, numTabs = pcall(GetNumTalentTabs)
+        if okTabs and numTabs and numTabs > 0 then
+            for tab = 1, numTabs do
+                local numTalents = GetNumTalents and GetNumTalents(tab) or 40
+                for i = 1, numTalents do
+                    local okTalent, tName = pcall(GetTalentInfo, tab, i)
+                    if okTalent and tName and type(tName) == "string" and tName ~= "" then
+                        talentCache[tName] = true
+                    end
+                    if GetTalentSpell then
+                        local okSpell, tSpellID = pcall(GetTalentSpell, tab, i)
+                        if okSpell and tSpellID and type(tSpellID) == "number" then
+                            talentCache[tSpellID] = true
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- 3. Scan tiered talent grid (GetMaxTalentTier, GetTalentInfo)
+    if GetMaxTalentTier and GetTalentInfo then
+        local okTier, maxTier = pcall(GetMaxTalentTier)
+        if okTier and maxTier and maxTier > 0 then
+            for tier = 1, maxTier do
+                for col = 1, 4 do
+                    local okT, tID, tName = pcall(GetTalentInfo, tier, col, 1)
+                    if okT then
+                        if tID and type(tID) == "number" then talentCache[tID] = true end
+                        if tName and type(tName) == "string" and tName ~= "" then talentCache[tName] = true end
+                    end
+                end
+            end
+        end
+    end
+
+    -- 4. Scan C_SpecializationInfo PvP talent queries if present
+    if C_SpecializationInfo and C_SpecializationInfo.GetPvpTalentInfo then
+        for slotIndex = 1, 3 do
+            local okSlot, slotInfo = pcall(C_SpecializationInfo.GetPvpTalentSlotInfo, slotIndex)
+            if okSlot and slotInfo and slotInfo.selectedTalentID then
+                local okInfo, tInfo = pcall(C_SpecializationInfo.GetPvpTalentInfo, slotInfo.selectedTalentID)
+                if okInfo and tInfo and tInfo.spellID then
+                    talentCache[tInfo.spellID] = true
+                    if tInfo.name then talentCache[tInfo.name] = true end
+                end
+            end
+        end
+    end
+end
+FSM.RefreshTalentCache = RefreshTalentCache
+
+local function IsTalentSpell(spellID, spellName)
+    if not spellName and spellID then
+        spellName = GetSpellName(spellID)
+    end
+    local cleanName = spellName and StripColorCodes(spellName):match("^%s*(.-)%s*$") or spellName
+
+    -- 1. Static known talent abilities lookup
+    if cleanName and KNOWN_TALENT_ABILITIES[cleanName] then
+        return true
+    end
+
+    -- 2. Dynamic talent cache (spellID and name)
+    if spellID and talentCache[spellID] then
+        return true
+    end
+    if cleanName and talentCache[cleanName] then
+        return true
+    end
+
+    -- 3. Modern C_Spell API
+    if C_Spell then
+        if C_Spell.IsClassTalentSpell then
+            if spellID then
+                local ok, isTalent = pcall(C_Spell.IsClassTalentSpell, spellID)
+                if ok and isTalent then return true end
+            end
+            if cleanName then
+                local ok, isTalent = pcall(C_Spell.IsClassTalentSpell, cleanName)
+                if ok and isTalent then return true end
+            end
+        end
+        if C_Spell.IsPvPTalentSpell then
+            if spellID then
+                local ok, isPvP = pcall(C_Spell.IsPvPTalentSpell, spellID)
+                if ok and isPvP then return true end
+            end
+            if cleanName then
+                local ok, isPvP = pcall(C_Spell.IsPvPTalentSpell, cleanName)
+                if ok and isPvP then return true end
+            end
+        end
+    end
+
+    -- 4. Modern C_SpellBook API
+    if C_SpellBook and spellID and C_SpellBook.FindSpellBookSlotForSpell then
+        local okFind, slotIndex, bank = pcall(C_SpellBook.FindSpellBookSlotForSpell, spellID)
+        if okFind and slotIndex then
+            if C_SpellBook.IsClassTalentSpellBookItem then
+                local ok, isTalent = pcall(C_SpellBook.IsClassTalentSpellBookItem, slotIndex, bank or "spell")
+                if ok and isTalent then return true end
+                local ok2, isTalent2 = pcall(C_SpellBook.IsClassTalentSpellBookItem, slotIndex)
+                if ok2 and isTalent2 then return true end
+            end
+            if C_SpellBook.IsPvPTalentSpellBookItem then
+                local ok, isPvP = pcall(C_SpellBook.IsPvPTalentSpellBookItem, slotIndex, bank or "spell")
+                if ok and isPvP then return true end
+                local ok2, isPvP2 = pcall(C_SpellBook.IsPvPTalentSpellBookItem, slotIndex)
+                if ok2 and isPvP2 then return true end
+            end
+        end
+    end
+
+    return false
+end
+FSM.IsTalentSpell = IsTalentSpell
+
 local function GetTrainerNPCTitle()
     local unit = (UnitExists("npc") and "npc") or (UnitExists("target") and "target") or nil
     if not unit then return nil end
 
-    scanTooltip:SetOwner(UIParent, "ANCHOR_NONE")
-    scanTooltip:ClearLines()
-    local ok = pcall(scanTooltip.SetUnit, scanTooltip, unit)
-    if ok then
-        local numLines = scanTooltip:NumLines() or 0
-        for i = 2, math.min(numLines, 5) do
-            local line = _G["FSMCacheScanTooltipTextLeft" .. i]
-            if line and line.GetText then
-                local text = line:GetText()
-                if text and text ~= "" then
+    -- Try C_TooltipInfo first if available
+    if C_TooltipInfo and C_TooltipInfo.GetUnit then
+        local okData, data = pcall(C_TooltipInfo.GetUnit, unit)
+        if okData and type(data) == "table" and not IsSecret(data) and type(data.lines) == "table" and not IsSecret(data.lines) then
+            for i = 2, math.min(#data.lines, 5) do
+                local lineData = data.lines[i]
+                if type(lineData) == "table" and not IsSecret(lineData) then
+                    local text = SafeString(lineData.leftText)
+                    if text then
+                        local clean = StripColorCodes(text):match("^%s*(.-)%s*$")
+                        if clean and clean ~= "" then
+                            local title = clean:match("^<(.+)>$") or clean:match("<(.+)>")
+                            if title then return title end
+                            if i == 2 and not clean:find("^Level") and not clean:find("^Requires") and not clean:find("Player") and not clean:find("Elite") and not clean:find("Boss") then
+                                return clean
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    if scanTooltip and scanTooltip.SetUnit then
+        scanTooltip:SetOwner(UIParent, "ANCHOR_NONE")
+        scanTooltip:ClearLines()
+        local ok = pcall(scanTooltip.SetUnit, scanTooltip, unit)
+        if ok then
+            local numLines = 0
+            local okNum, n = pcall(scanTooltip.NumLines, scanTooltip)
+            if okNum and type(n) == "number" and not IsSecret(n) then
+                numLines = n
+            end
+            for i = 2, math.min(numLines, 5) do
+                local line = _G["FSMCacheScanTooltipTextLeft" .. i]
+                local text = SafeGetText(line)
+                if text then
                     local clean = StripColorCodes(text):match("^%s*(.-)%s*$")
-                    local title = clean:match("^<(.+)>$") or clean:match("<(.+)>")
-                    if title then return title end
-                    if i == 2 and not clean:find("^Level") and not clean:find("^Requires") and not clean:find("Player") and not clean:find("Elite") and not clean:find("Boss") then
-                        return clean
+                    if clean and clean ~= "" then
+                        local title = clean:match("^<(.+)>$") or clean:match("<(.+)>")
+                        if title then return title end
+                        if i == 2 and not clean:find("^Level") and not clean:find("^Requires") and not clean:find("Player") and not clean:find("Elite") and not clean:find("Boss") then
+                            return clean
+                        end
                     end
                 end
             end
@@ -751,14 +1190,15 @@ local function GetTrainerNPCTitle()
 end
 
 local function IsTrainerNPCAllowed()
+    if IsBeastTrainingWindowOpen() then return false end
     if IsTradeskillTrainer and IsTradeskillTrainer() then return false end
     if C_Trainer and C_Trainer.IsTradeskillTrainer and C_Trainer.IsTradeskillTrainer() then return false end
 
     local _, playerClass = UnitClass("player")
     playerClass = playerClass or "UNKNOWN"
 
-    local title = GetTrainerNPCTitle()
-    if not title or title == "" then
+    local title = SafeString(GetTrainerNPCTitle())
+    if not title then
         return true -- Fallback to service-level filtering
     end
 
@@ -776,14 +1216,10 @@ local function IsTrainerNPCAllowed()
         return false
     end
 
-    -- 3. Hunter Pet Trainers (only allowed for Hunters)
-    if lower:find("pet trainer") or lower:find("beast trainer") then
-        if playerClass == "HUNTER" then
-            return true
-        else
-            DebugPrint("Blocked pet trainer NPC for non-hunter (" .. title .. ")")
-            return false
-        end
+    -- 3. Hunter Pet Trainers / Beast Trainers (always blocked - skills belong to Beast Training window)
+    if lower:find("pet trainer") or lower:find("beast trainer") or lower:find("pet training") or lower:find("beast training") then
+        DebugPrint("Blocked trainer NPC: Pet / Beast Trainer (" .. title .. ")")
+        return false
     end
 
     -- 4. Warlock Demon Trainers (only allowed for Warlocks)
@@ -834,7 +1270,9 @@ local function IsTrainerNPCAllowed()
 end
 
 local function IsTrainerSpellAllowed(name, rank, spellID, reqLevel, reqClasses)
-    if not name or name == "" then return false end
+    name = SafeString(name)
+    if not name then return false end
+    reqClasses = SafeString(reqClasses)
     local localizedClass, playerClass = UnitClass("player")
     playerClass = playerClass or "UNKNOWN"
     localizedClass = localizedClass or ""
@@ -859,16 +1297,9 @@ local function IsTrainerSpellAllowed(name, rank, spellID, reqLevel, reqClasses)
         return (playerClass == "WARLOCK")
     end
 
-    -- 5. Hunter Pet Trainer unique skills: only allowed for Hunters
-    if HUNTER_PET_UNIQUE_SKILLS[name] then
-        return (playerClass == "HUNTER")
-    end
-
-    -- Growl / Cower / Dash: Druids have these in forms; Hunters have them for pets; others do not.
-    if name == "Growl" or name == "Cower" or name == "Dash" then
-        if playerClass ~= "HUNTER" and playerClass ~= "DRUID" then
-            return false
-        end
+    -- 5. Beast Training skills (always ignored for Hunters; unique pet skills ignored for all classes)
+    if IsBeastTrainingSkill(name) then
+        return false
     end
 
     -- 6. If tooltip explicitly specifies class restrictions, verify player's class is allowed
@@ -884,7 +1315,60 @@ local function IsTrainerSpellAllowed(name, rank, spellID, reqLevel, reqClasses)
     return true
 end
 
+local function CleanTrainerCache(charKey)
+    if not ForeverSkillManagerDB or not ForeverSkillManagerDB.trainerCache then return end
+
+    local function CleanSingleCache(cache, keyName)
+        if type(cache) ~= "table" then return end
+        local purgedCount = 0
+
+        -- 1. Purge disallowed, invalid, or status-keyword corrupted entries (e.g. rank="unavailable" or key="...unavailable")
+        for key, info in pairs(cache) do
+            local shouldPurge = false
+            if type(info) ~= "table" then
+                shouldPurge = true
+            elseif not IsTrainerSpellAllowed(info.name, info.rank, info.spellID, info.reqLevel, info.reqClasses) then
+                shouldPurge = true
+            else
+                local rClean = tostring(info.rank or ""):lower():gsub("%s+", "")
+                if rClean == "unavailable" or rClean == "available" or rClean == "used" or rClean == "header" then
+                    shouldPurge = true
+                elseif type(key) == "string" and (key:find("unavailable$") or key:find("available$") or key:find("used$") or key:find("header$")) then
+                    shouldPurge = true
+                end
+            end
+
+            if shouldPurge then
+                cache[key] = nil
+                purgedCount = purgedCount + 1
+            end
+        end
+
+        -- 2. Purge any duplicate non-numeric string keys if a numeric spellID key exists for the same spell
+        for key, info in pairs(cache) do
+            if type(info) == "table" and type(key) ~= "number" and info.spellID and cache[info.spellID] then
+                cache[key] = nil
+                purgedCount = purgedCount + 1
+            end
+        end
+
+        if purgedCount > 0 then
+            DebugPrint("CleanTrainerCache: Purged " .. purgedCount .. " invalid/stale entries from cache for " .. tostring(keyName))
+        end
+    end
+
+    if charKey then
+        CleanSingleCache(ForeverSkillManagerDB.trainerCache[charKey], charKey)
+    else
+        for k, cache in pairs(ForeverSkillManagerDB.trainerCache) do
+            CleanSingleCache(cache, k)
+        end
+    end
+end
+FSM.CleanTrainerCache = CleanTrainerCache
+
 local function CacheTrainerSpells()
+    if IsBeastTrainingWindowOpen() then return end
     if not IsTrainerNPCAllowed() then return end
 
     local numServices = GetNumTrainerServices and GetNumTrainerServices() or 0
@@ -905,20 +1389,28 @@ local function CacheTrainerSpells()
 
         if C_Trainer and C_Trainer.GetTrainerServiceInfo then
             local info = C_Trainer.GetTrainerServiceInfo(i)
-            if info then
-                name, rank, cost, reqLevel, spellID = info.name, info.subText, info.moneyCost, info.reqLevel, info.spellID
+            if info and not IsSecret(info) then
+                name = SafeString(info.name)
+                rank = SafeString(info.subText) or ""
+                cost = (not IsSecret(info.moneyCost) and tonumber(info.moneyCost)) or 0
+                reqLevel = (not IsSecret(info.reqLevel) and tonumber(info.reqLevel)) or 0
+                spellID = (not IsSecret(info.spellID) and info.spellID) or nil
                 category = (info.serviceType == 2) and "used" or ((info.serviceType == 0) and "available" or "unavailable")
                 if info.serviceType == 3 then category = "header" end
             end
         else
-            name, rank, category = GetTrainerServiceInfo(i)
+            local rawName, rawRank, rawCat = GetTrainerServiceInfo(i)
+            name = SafeString(rawName)
+            rank = SafeString(rawRank) or ""
+            category = SafeString(rawCat) or ""
             cost = GetTrainerServiceCost and GetTrainerServiceCost(i) or 0
             if GetTrainerServiceLevelReq then reqLevel = GetTrainerServiceLevelReq(i) end
         end
 
         -- Handle 16001 engine returning availability/header in the 2nd return value ('rank')
-        if rank == "available" or rank == "unavailable" or rank == "used" or rank == "header" then
-            category = rank
+        local rClean = tostring(rank or ""):lower():gsub("%s+", "")
+        if rClean == "available" or rClean == "unavailable" or rClean == "used" or rClean == "header" then
+            category = rClean
             rank = ""
         end
 
@@ -950,10 +1442,13 @@ local function CacheTrainerSpells()
                     end
                 end
             else
-                -- Purge any legacy duplicate keys that used the unstable trainer row index '_i' for this spell
+                -- Purge any legacy duplicate keys that used the unstable trainer row index '_i' or invalid ranks
                 for existingKey, existingInfo in pairs(cache) do
                     if type(existingInfo) == "table" and existingInfo.name == name then
-                        if (existingInfo.rank or "") == rank and existingInfo.reqLevel == reqLevel and existingKey ~= spellID then
+                        local exRank = tostring(existingInfo.rank or ""):lower():gsub("%s+", "")
+                        if exRank == "unavailable" or exRank == "available" or exRank == "used" or exRank == "header" then
+                            cache[existingKey] = nil
+                        elseif (existingInfo.rank or "") == rank and existingInfo.reqLevel == reqLevel and existingKey ~= spellID then
                             cache[existingKey] = nil
                         elseif (existingInfo.rank or "") == "" and rank ~= "" and existingInfo.reqLevel == reqLevel then
                             cache[existingKey] = nil
@@ -1001,6 +1496,7 @@ end
 
 local function AutoTrainAvailableSpells()
     if not ForeverSkillManagerDB or not ForeverSkillManagerDB.autoTrainSpells then return end
+    if IsBeastTrainingWindowOpen() then return end
     if not IsTrainerNPCAllowed() then return end
     if not BuyTrainerService then return end
 
@@ -1015,17 +1511,23 @@ local function AutoTrainAvailableSpells()
         local name, rank, category, cost
         if C_Trainer and C_Trainer.GetTrainerServiceInfo then
             local info = C_Trainer.GetTrainerServiceInfo(i)
-            if info then
-                name, rank, cost = info.name, info.subText, info.moneyCost
+            if info and not IsSecret(info) then
+                name = SafeString(info.name)
+                rank = SafeString(info.subText) or ""
+                cost = (not IsSecret(info.moneyCost) and tonumber(info.moneyCost)) or 0
                 category = (info.serviceType == 0) and "available" or "other"
             end
         else
-            name, rank, category = GetTrainerServiceInfo(i)
+            local rawName, rawRank, rawCat = GetTrainerServiceInfo(i)
+            name = SafeString(rawName)
+            rank = SafeString(rawRank) or ""
+            category = SafeString(rawCat) or ""
             cost = GetTrainerServiceCost and GetTrainerServiceCost(i) or 0
         end
 
-        if rank == "available" or rank == "unavailable" or rank == "used" or rank == "header" then
-            category = rank
+        local rClean = tostring(rank or ""):lower():gsub("%s+", "")
+        if rClean == "available" or rClean == "unavailable" or rClean == "used" or rClean == "header" then
+            category = rClean
             rank = ""
         end
 
@@ -1055,10 +1557,19 @@ local function CheckAvailableTrainerSpells(overrideLevel)
         return available, 0, upcoming
     end
 
+    CleanTrainerCache(charKey)
+
     local cache = ForeverSkillManagerDB.trainerCache[charKey]
+    local seenAvailable = {}
+    local seenUpcoming = {}
+
     for key, info in pairs(cache) do
-        -- Purge any disallowed / non-class spells that were cached previously (e.g. from weapon masters)
-        if not IsTrainerSpellAllowed(info.name, info.rank, info.spellID, info.reqLevel, info.reqClasses) then
+        local rClean = tostring(info.rank or ""):lower():gsub("%s+", "")
+        local isInvalidRank = (rClean == "unavailable" or rClean == "available" or rClean == "used" or rClean == "header")
+        local isInvalidKey = type(key) == "string" and (key:find("unavailable$") or key:find("available$") or key:find("used$") or key:find("header$"))
+
+        -- Purge any disallowed / non-class spells or status-corrupted legacy entries
+        if isInvalidRank or isInvalidKey or not IsTrainerSpellAllowed(info.name, info.rank, info.spellID, info.reqLevel, info.reqClasses) then
             cache[key] = nil
         else
             local rLvl = tonumber(info.reqLevel) or 1
@@ -1068,18 +1579,25 @@ local function CheckAvailableTrainerSpells(overrideLevel)
             info.known = actuallyKnown
 
             if not info.known then
+                local dedupKey = (info.spellID and tostring(info.spellID)) or (info.name .. "_" .. (info.rank or "") .. "_" .. rLvl)
                 if rLvl <= playerLevel then
-                    table.insert(available, {
-                        key = key, name = info.name, rank = info.rank, 
-                        cost = info.cost or 0, level = rLvl, spellID = info.spellID
-                    })
-                    totalCost = totalCost + (info.cost or 0)
+                    if not seenAvailable[dedupKey] then
+                        seenAvailable[dedupKey] = true
+                        table.insert(available, {
+                            key = key, name = info.name, rank = info.rank, 
+                            cost = info.cost or 0, level = rLvl, spellID = info.spellID
+                        })
+                        totalCost = totalCost + (info.cost or 0)
+                    end
                 -- Upcoming spells strictly between (playerLevel + 1) and (playerLevel + 3)
                 elseif rLvl > playerLevel and rLvl <= (playerLevel + 3) then
-                    table.insert(upcoming, {
-                        key = key, name = info.name, rank = info.rank, 
-                        cost = info.cost or 0, level = rLvl, spellID = info.spellID
-                    })
+                    if not seenUpcoming[dedupKey] then
+                        seenUpcoming[dedupKey] = true
+                        table.insert(upcoming, {
+                            key = key, name = info.name, rank = info.rank, 
+                            cost = info.cost or 0, level = rLvl, spellID = info.spellID
+                        })
+                    end
                 end
             end
         end
@@ -1292,8 +1810,12 @@ local function OpenTrainerReminder(manual, overrideLevel)
         row:EnableMouse(true)
         row.text:SetFontObject("GameFontNormal")
         
-        -- Explicitly format and show the rank
-        local rankStr = (spell.rank and spell.rank ~= "") and (" (" .. spell.rank .. ")") or ""
+        -- Explicitly format and show the rank (guard against any status keyword leaking into rank text)
+        local rankStr = ""
+        local rClean = tostring(spell.rank or ""):lower():gsub("%s+", "")
+        if spell.rank and spell.rank ~= "" and rClean ~= "unavailable" and rClean ~= "available" and rClean ~= "used" and rClean ~= "header" then
+            rankStr = " (" .. spell.rank .. ")"
+        end
         row.text:ClearAllPoints()
         row.text:SetPoint("LEFT", row.icon, "RIGHT", 12, 0)
         row.text:SetText("|cffffd100" .. spell.name .. "|r|cff888888" .. rankStr .. "|r")
@@ -1381,6 +1903,11 @@ local function ProcessLearnedSpell(spellID)
         return
     end
 
+    if IsBeastTrainingWindowOpen() then
+        DebugPrint(" -> BLOCKED: Beast Training window is open")
+        return
+    end
+
     local isPassive = IsSpellPassive(spellID)
     DebugPrint(" -> IsSpellPassive = " .. tostring(isPassive))
     if isPassive then
@@ -1391,8 +1918,16 @@ local function ProcessLearnedSpell(spellID)
     DebugPrint(" -> spellName = " .. tostring(spellName))
     if not spellName then return end
 
+    if IsBeastTrainingSkill(spellName) then
+        DebugPrint(" -> BLOCKED: ignoring skill from Beast Training window (" .. spellName .. ")")
+        return
+    end
+
     DebugPrint(" -> autoAddSpells = " .. tostring(ForeverSkillManagerDB.autoAddSpells))
     DebugPrint(" -> autoUpgradeSpells = " .. tostring(ForeverSkillManagerDB.autoUpgradeSpells))
+
+    local isTalent = IsTalentSpell(spellID, spellName)
+    DebugPrint(" -> isTalent = " .. tostring(isTalent))
 
     -- Mark known in trainer cache (matching exact spellID or matching both spell name and rank)
     local charKey = GetCharKey()
@@ -1467,6 +2002,11 @@ local function ProcessLearnedSpell(spellID)
 
     -- 2. Place completely new spell into first open action bar slot across visible Bars
     if ForeverSkillManagerDB.autoAddSpells and #existingSlots == 0 then
+        if isTalent and not ForeverSkillManagerDB.autoAddTalentSpells then
+            DebugPrint(" -> BLOCKED: ignoring talent ability from action bar placement (" .. tostring(spellName) .. ")")
+            return
+        end
+
         local emptySlot = FindFirstEmptySlot()
         DebugPrint(" -> NEW SPELL PATH: emptySlot = " .. tostring(emptySlot))
         if emptySlot then
@@ -1627,7 +2167,10 @@ local function SnapshotSpellbook()
                         end
                     end
                     if sID then
-                        snapshot[sID] = true
+                        local sName = GetSpellName(sID)
+                        if not IsBeastTrainingSkill(sName) then
+                            snapshot[sID] = true
+                        end
                     end
                 end
             end
@@ -1662,7 +2205,10 @@ local function SnapshotSpellbook()
                     end
                 end
                 if sID and not isFuture then
-                    snapshot[sID] = true
+                    local sName = GetSpellName(sID)
+                    if not IsBeastTrainingSkill(sName) then
+                        snapshot[sID] = true
+                    end
                 end
             end
         end
@@ -1688,8 +2234,17 @@ end
 local prevLogin = FSM.Events["PLAYER_LOGIN"]
 FSM.Events["PLAYER_LOGIN"] = function(self, ...)
     if prevLogin then prevLogin(self, ...) end
+    CleanTrainerCache()
     CacheEquippedItems()
+    RefreshTalentCache()
     knownSpellIDs = SnapshotSpellbook()
+    if talentCache then
+        for id in pairs(talentCache) do
+            if type(id) == "number" then
+                knownSpellIDs[id] = true
+            end
+        end
+    end
     spellbookInitialized = true
     local count = 0
     for _ in pairs(knownSpellIDs) do count = count + 1 end
@@ -1698,6 +2253,7 @@ FSM.Events["PLAYER_LOGIN"] = function(self, ...)
     -- Check for unlearned trainer spells and unspent talent points on login/reload
     if C_Timer and C_Timer.After then
         C_Timer.After(2.0, function()
+            CleanTrainerCache()
             if FSM.UpdateMinimapAlert then
                 FSM.UpdateMinimapAlert()
             end
@@ -1731,6 +2287,14 @@ FSM.Events["TRAINER_UPDATE"] = function(self)
 end
 
 FSM.Events["CHARACTER_POINTS_CHANGED"] = function(self)
+    RefreshTalentCache()
+    if talentCache then
+        for id in pairs(talentCache) do
+            if type(id) == "number" then
+                knownSpellIDs[id] = true
+            end
+        end
+    end
     if FSM.UpdateMinimapAlert then
         FSM.UpdateMinimapAlert()
     end
@@ -1774,6 +2338,7 @@ end
 FSM.Events["LEARNED_SPELL_IN_TAB"] = function(self, spellID, ...)
     DebugPrint("LEARNED_SPELL_IN_TAB fired! spellID=" .. tostring(spellID))
     if spellID and type(spellID) == "number" and spellID > 0 then
+        knownSpellIDs[spellID] = true
         ProcessLearnedSpell(spellID)
     end
 end
@@ -1781,13 +2346,32 @@ end
 FSM.Events["LEARNED_SPELL_IN_SKILL_LINE"] = function(self, spellID, ...)
     DebugPrint("LEARNED_SPELL_IN_SKILL_LINE fired! spellID=" .. tostring(spellID))
     if spellID and type(spellID) == "number" and spellID > 0 then
+        knownSpellIDs[spellID] = true
         ProcessLearnedSpell(spellID)
+    end
+end
+
+FSM.Events["CRAFT_SHOW"] = function(self)
+    if (CraftIsPetTraining and CraftIsPetTraining()) or (GetCraftSkillLine and (GetCraftSkillLine() == "Beast Training" or tostring(GetCraftSkillLine()):find("Beast Training"))) then
+        isBeastTrainingWindowActive = true
+        DebugPrint("Beast Training window opened (CRAFT_SHOW)")
+    end
+end
+
+FSM.Events["CRAFT_CLOSE"] = function(self)
+    if isBeastTrainingWindowActive then
+        isBeastTrainingWindowActive = false
+        DebugPrint("Beast Training window closed (CRAFT_CLOSE)")
     end
 end
 
 local spellsChangedThrottle = 0
 FSM.Events["SPELLS_CHANGED"] = function(self)
     if not spellbookInitialized then return end
+    if IsBeastTrainingWindowOpen() then
+        DebugPrint("SPELLS_CHANGED ignored: Beast Training window is open")
+        return
+    end
 
     local now = GetTime()
     if now - spellsChangedThrottle < 0.5 then return end
@@ -1798,6 +2382,7 @@ FSM.Events["SPELLS_CHANGED"] = function(self)
     for sID in pairs(newSnapshot) do
         if not knownSpellIDs[sID] then
             table.insert(newSpellIDs, sID)
+            knownSpellIDs[sID] = true
         end
     end
 
@@ -1810,7 +2395,10 @@ FSM.Events["SPELLS_CHANGED"] = function(self)
         end
     end
 
-    knownSpellIDs = newSnapshot
+    -- Retain all previously known spells across shapeshifts, stances, and form switches
+    for sID in pairs(newSnapshot) do
+        knownSpellIDs[sID] = true
+    end
 end
 
 FSM.Events["PLAYER_EQUIPMENT_CHANGED"] = function(self, equipSlot)

@@ -62,6 +62,7 @@ Settings are persistently stored per-account in `ForeverSkillManagerDB`:
 
 - `autoAddSpells`: Automatically place newly learned spells in free action bar slots. *(Default: On)*
 - `autoUpgradeSpells`: Automatically upgrade existing spell ranks in place. *(Default: On)*
+- `autoAddTalentSpells`: Automatically place newly learned talent abilities in free slots. *(Default: Off)*
 - `autoAddGear`: Automatically place equipped "Use" gear & trinkets onto bars. *(Default: On)*
 - `autoUpgradeGear`: Automatically update swapped "Use" gear on action bars. *(Default: On)*
 - `trainerAlert`: Show a reminder popup on level-up when new spells can be trained. *(Default: On)*

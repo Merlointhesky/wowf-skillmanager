@@ -2,20 +2,21 @@
 local addonName, FSM = ...
 
 local defaults = {
-    autoAddSpells = true,     -- Toggle for placing NEW spells in free slots
-    autoUpgradeSpells = true, -- Toggle for upgrading existing spell ranks on bar
-    autoAddGear = true,       -- Toggle for placing NEW on-use gear in free slots
-    autoUpgradeGear = true,   -- Toggle for replacing swapped on-use gear on bar
-    trainerAlert = true,      -- Toggle for popup reminder on level up
-    talentAlert = true,       -- Toggle for unspent talent points reminder on login/level up
-    autoTrainSpells = false,  -- Toggle for auto-learning available spells at class trainer
-    debugMode = false,        -- Toggle for debug chat logging
-    minimapPos = 180,         -- Angle position around minimap (West / 9 o'clock)
-    trainerCache = {},        -- Cached trainer spells: [charKey] = { [key] = {...} }
+    autoAddSpells = true,        -- Toggle for placing NEW spells in free slots
+    autoUpgradeSpells = true,    -- Toggle for upgrading existing spell ranks on bar
+    autoAddTalentSpells = false, -- Toggle for placing NEW talent abilities in free slots
+    autoAddGear = true,          -- Toggle for placing NEW on-use gear in free slots
+    autoUpgradeGear = true,      -- Toggle for replacing swapped on-use gear on bar
+    trainerAlert = true,         -- Toggle for popup reminder on level up
+    talentAlert = true,          -- Toggle for unspent talent points reminder on login/level up
+    autoTrainSpells = false,     -- Toggle for auto-learning available spells at class trainer
+    debugMode = false,           -- Toggle for debug chat logging
+    minimapPos = 180,            -- Angle position around minimap (West / 9 o'clock)
+    trainerCache = {},           -- Cached trainer spells: [charKey] = { [key] = {...} }
 }
 
 local configFrame = CreateFrame("Frame", "ForeverSkillManagerOptionsPanel", UIParent, "BackdropTemplate,BasicFrameTemplateWithInset")
-configFrame:SetSize(320, 346)
+configFrame:SetSize(320, 374)
 configFrame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
 configFrame:SetMovable(true)
 configFrame:EnableMouse(true)
@@ -72,11 +73,12 @@ local function InitOptionsPanel()
 
     createCheck("Auto-add new spells to action bar", "autoAddSpells", -40)
     createCheck("Auto-upgrade spell ranks in place", "autoUpgradeSpells", -68)
-    createCheck("Auto-add equipped 'Use' gear & trinkets", "autoAddGear", -96)
-    createCheck("Auto-update swapped 'Use' gear on bar", "autoUpgradeGear", -124)
-    createCheck("Trainer level-up reminder popup", "trainerAlert", -152)
-    createCheck("Unspent talent points reminder", "talentAlert", -180)
-    createCheck("Auto-learn spells at class trainer", "autoTrainSpells", -208)
+    createCheck("Auto-add talent abilities to bar", "autoAddTalentSpells", -96)
+    createCheck("Auto-add equipped 'Use' gear & trinkets", "autoAddGear", -124)
+    createCheck("Auto-update swapped 'Use' gear on bar", "autoUpgradeGear", -152)
+    createCheck("Trainer level-up reminder popup", "trainerAlert", -180)
+    createCheck("Unspent talent points reminder", "talentAlert", -208)
+    createCheck("Auto-learn spells at class trainer", "autoTrainSpells", -236)
 
     local viewTrainerBtn = CreateFrame("Button", nil, configFrame, "GameMenuButtonTemplate")
     viewTrainerBtn:SetPoint("BOTTOMLEFT", 20, 48)
@@ -329,6 +331,11 @@ SlashCmdList["FOREVERSKILLMANAGER"] = function(msg)
         if FSM.ScanAndAddEquippedGear then
             FSM.ScanAndAddEquippedGear()
         end
+    elseif cleanMsg == "clean" or cleanMsg == "cleancache" then
+        if FSM.CleanTrainerCache then
+            FSM.CleanTrainerCache()
+            print("|cff00ff00[Forever Skill Manager]|r Cleaned trainer cache and removed corrupt/duplicate spells.")
+        end
     elseif cleanMsg == "debug" then
         if ForeverSkillManagerDB then
             ForeverSkillManagerDB.debugMode = not ForeverSkillManagerDB.debugMode
@@ -339,6 +346,7 @@ SlashCmdList["FOREVERSKILLMANAGER"] = function(msg)
         print("  |cffffff00/fsm|r - Toggle configuration panel")
         print("  |cffffff00/fsm trainer|r - View available trainer spells")
         print("  |cffffff00/fsm scan|r - Scan and add equipped on-use gear")
+        print("  |cffffff00/fsm clean|r - Clean trainer cache and purge stale/corrupted entries")
         print("  |cffffff00/fsm debug|r - Toggle debug logging")
     else
         ToggleOptions()

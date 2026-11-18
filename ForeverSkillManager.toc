@@ -1,7 +1,7 @@
 ## Interface: 16001
 ## Title: ForeverSkillManager
 ## Notes: Automatically places learned spells and on-use equipped gear into open action bar slots and upgrades existing ranks in place.
-## Version: 1.4.1
+## Version: 1.5.0
 ## Author: merlointhesky (Merlointhesky)
 ## X-Category: Action Bars
 ## X-Localizations: enUS
